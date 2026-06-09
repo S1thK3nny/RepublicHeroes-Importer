@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+tests/_tmp/
+tests/_tmp_tex/
+*.mktx.dds
