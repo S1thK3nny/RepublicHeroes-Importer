@@ -687,6 +687,11 @@ def import_mdl(context, filepath, convert_textures=True, flip_uvs=True,
 # Format notes: see docs/FORMAT.md. Rotation keys are deltas from the bind
 # pose, which is also what Blender's pose-bone basis expects.
 
+# Native frame rate of the game's animation data: every clip duration in
+# the dump is an exact multiple of 1/30 s and key times sit on that grid.
+GAME_FPS = 30.0
+
+
 def _cstr(data, offset):
     end = data.index(b"\x00", offset)
     return data[offset:end].decode("latin-1")
@@ -708,7 +713,8 @@ def parse_ads(filepath):
             print("WARNING: bad ANSD chunk at", hex(chunk))
             continue
         name = _cstr(d, chunk + struct.unpack_from("<I", d, chunk + 0xC)[0])
-        frame_dt, frame_count = struct.unpack_from("<2f", d, chunk + 0x10)
+        # +0x10 = clip duration in seconds (+0x14 is just its reciprocal)
+        duration = struct.unpack_from("<f", d, chunk + 0x10)[0]
         track_count = struct.unpack_from("<I", d, chunk + 0x30)[0]
 
         rot_tracks = {}
@@ -740,7 +746,7 @@ def parse_ads(filepath):
 
         anims.append({
             "name": name,
-            "duration": frame_dt * frame_count,
+            "duration": duration,
             "rot_tracks": rot_tracks,
             "pos_track_bones": pos_track_bones,
         })
@@ -754,9 +760,11 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
     armature/model space (row-vector convention, hence the conjugation).
     Blender's pose basis lives in the bone's local rest frame, so the
     delta is conjugated by the bone's armature-space rest rotation.
+
+    Keys are placed on the game's native 30 fps frame grid (every clip
+    duration in the game data is an exact multiple of 1/30 s).
     See docs/FORMAT.md.
     """
-    fps = context.scene.render.fps / context.scene.render.fps_base
     pose_map = {pb.name.lower(): pb.name for pb in arm_obj.pose.bones}
     rest_arm = {pb.name: pb.bone.matrix_local.to_quaternion()
                 for pb in arm_obj.pose.bones}
@@ -768,7 +776,7 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
             continue
         action = bpy.data.actions.new("{}.{}".format(prefix, anim["name"]))
         action.use_fake_user = True
-        frame_span = max(anim["duration"], 1e-6) * fps
+        frame_span = max(anim["duration"], 1e-6) * GAME_FPS
         for bone_name, (times, quats) in anim["rot_tracks"].items():
             target = pose_map.get(bone_name.lower())
             if target is None:
@@ -789,12 +797,19 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
                 fc.keyframe_points.add(len(times))
                 co = [0.0] * (2 * len(times))
                 for k, t in enumerate(times):
-                    co[2 * k] = 1.0 + t * frame_span
+                    frame = 1.0 + t * frame_span
+                    # u16 time quantization: snap to the 30 fps grid
+                    if abs(frame - round(frame)) < 0.05:
+                        frame = float(round(frame))
+                    co[2 * k] = frame
                     co[2 * k + 1] = basis[k][ci]
                 fc.keyframe_points.foreach_set("co", co)
                 for kp in fc.keyframe_points:
                     kp.interpolation = "LINEAR"
                 fc.update()
+        action.use_frame_range = True
+        action.frame_start = 1.0
+        action.frame_end = 1.0 + round(frame_span)
         created.append(action)
 
     if missing:
@@ -872,6 +887,13 @@ class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
                     "(empty = all)",
         default="",
     )
+    set_scene_fps: BoolProperty(
+        name="Set Scene to 30 FPS",
+        description="Keyframes are placed on the game's native 30 fps grid; "
+                    "set the scene frame rate to match so playback speed "
+                    "is correct",
+        default=True,
+    )
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -892,6 +914,9 @@ class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
                         "Failed to parse file (unexpected format): " + repr(e))
             return {"CANCELLED"}
         prefix = os.path.basename(self.filepath).split(".")[0]
+        if self.set_scene_fps:
+            context.scene.render.fps = int(GAME_FPS)
+            context.scene.render.fps_base = 1.0
         actions = build_actions(context, arm_obj, ads, prefix,
                                 name_filter=self.name_filter)
         skipped = [a["name"] for a in ads["anims"]

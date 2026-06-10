@@ -37,6 +37,12 @@ the import options lets you import a subset (e.g. only names containing
 format has (root motion, cameras) are not decoded yet, so characters
 animate in place (see `docs/FORMAT.md`).
 
+Keyframes land on the game's native 30 fps frame grid with each
+action's frame range set to its true length (e.g. `Run` = frames 1-24,
+`Idle_00` = 1-102). The *Set Scene to 30 FPS* import option (on by
+default) switches the scene frame rate to match so playback speed is
+correct.
+
 Meshes are built with UVs, smooth shading and Principled BSDF node materials
 (base color, normal map, specular). The skeleton is imported as an armature
 and meshes are bound to it with vertex groups and an Armature modifier.

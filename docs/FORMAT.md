@@ -120,8 +120,8 @@ All offsets below are relative to the chunk start unless noted.
 +0x04  u32    chunk size (through the name strings)
 +0x08  u32    0
 +0x0C  u32    offset of animation name (C string)
-+0x10  float  frame interval in seconds (e.g. 0.03333)
-+0x14  float  frame count (duration = interval * count, seconds)
++0x10  float  clip duration in seconds
++0x14  float  1 / duration (reciprocal; redundant)
 +0x18  i32    negated chunk offset (self pointer; ignore)
 +0x1C  u32    0
 +0x20  float  0.5 (constant; blend weight?)
@@ -146,7 +146,10 @@ All offsets below are relative to the chunk start unless noted.
 entry's own position (self-relative pointer quirk).
 
 - **Times**: `u16[key count]`, normalized 0..0xFFFF over the clip
-  duration. Monotonic (verified over ~80k keys).
+  duration. Monotonic (verified over ~80k keys). The game's native rate
+  is 30 fps: every clip duration in the dump (7,933 animations) is
+  an exact multiple of 1/30 s, and key times land on that grid
+  (animations are key-reduced, so not every frame has a key).
 - **Rotation values** (flag 1): 6 bytes/key - `s16 x, y, z`; component =
   `s16/32767`; `w = sqrt(1 - x² - y² - z²)` (encoder keeps w ≥ 0).
   The quaternion is the bone's rotation **delta from the bind pose,

@@ -45,6 +45,16 @@ assert len(run.fcurves) > 100, len(run.fcurves)
 assert all(kp.interpolation == "LINEAR"
            for kp in run.fcurves[0].keyframe_points)
 
+# native frame counts (30 fps): Run = 0.767s = 23 frames, Idle_00 = 101
+assert ctx.scene.render.fps == 30, ctx.scene.render.fps
+assert tuple(run.frame_range) == (1.0, 24.0), tuple(run.frame_range)
+idle = bpy.data.actions["a_battledroid.Idle_00"]
+assert tuple(idle.frame_range) == (1.0, 102.0), tuple(idle.frame_range)
+# keys snapped onto integer frames of the 30 fps grid
+for fc in run.fcurves[:8]:
+    for kp in fc.keyframe_points:
+        assert abs(kp.co.x - round(kp.co.x)) < 1e-4, kp.co.x
+
 # pose sanity: droid upright (Y-up) through the Run cycle
 arm.animation_data.action = run
 f0, f1 = run.frame_range
