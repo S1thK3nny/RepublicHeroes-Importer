@@ -18,10 +18,14 @@ addon = importlib.import_module("io_import_republicheroes_mdl")
 
 import bpy  # noqa: E402
 
-os.makedirs(TMP, exist_ok=True)
-
 tex_files = glob.glob(os.path.join(glob.escape(SAMPLES), "*.mktx.tex"))
-assert tex_files, "no sample textures found"
+if not tex_files:
+    print("SKIP: no sample textures in tests/samples/ (copyrighted game "
+          "assets are not redistributed). Drop the game's .mktx.tex files "
+          "there to run this test.")
+    sys.exit(0)
+
+os.makedirs(TMP, exist_ok=True)
 
 ok = 0
 for tex_path in sorted(tex_files):

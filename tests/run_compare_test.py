@@ -52,7 +52,11 @@ for tga in glob.glob(os.path.join(glob.escape(SAMPLES), "*.mktxout.tga")):
     if os.path.exists(tex):
         refs.append((tex, tga))
 
-assert refs, "no reference pairs found"
+if not refs:
+    print("SKIP: no reference texture pairs in tests/samples/ (copyrighted "
+          "game assets are not redistributed). Drop the game's .mktx.tex + "
+          ".mktxout.tga files there to run this test.")
+    sys.exit(0)
 
 for tex_path, ref_path in sorted(refs):
     name = os.path.basename(tex_path).replace(".mktx.tex", "")

@@ -7,7 +7,7 @@ The Clone Wars: Republic Heroes** (PC).
 
 1. In Blender: *Edit > Preferences > Add-ons > Install...*
 2. Select `io_import_republicheroes_mdl.py`.
-3. Enable *"Star Wars The Clone Wars: Republic Heroes (.mdl)"*.
+3. Enable *"Star Wars The Clone Wars: Republic Heroes (.mdl/.ads)"*.
 
 ## Usage
 
@@ -93,7 +93,14 @@ Headless smoke tests (adjust the Blender path as needed):
 & "D:\SteamLibrary\steamapps\common\Blender\blender.exe" --background --factory-startup --python tests\run_blender_test.py
 & "D:\SteamLibrary\steamapps\common\Blender\blender.exe" --background --factory-startup --python tests\run_texture_test.py
 & "D:\SteamLibrary\steamapps\common\Blender\blender.exe" --background --factory-startup --python tests\run_compare_test.py
+& "D:\SteamLibrary\steamapps\common\Blender\blender.exe" --background --factory-startup --python tests\run_anim_test.py
 ```
+
+The tests run against extracted game assets, which are **not** redistributed
+with this repo (they are copyrighted). Each test prints `SKIP` and exits
+cleanly if the files are absent. To run them, drop your own extracted files
+into `tests/samples/` (`.mktx.tex` + `.mktxout.tga` textures) and `research/`
+(`.mkmesh.mdl`/`.mdg` and `.ast.ads` for the battledroid, Ahsoka and wed1577).
 
 - `run_blender_test.py` builds a synthetic `.mdl`/`.mdg`/`.min.bin` set (one
   triangle, one bone, one material referencing a real sample texture), runs

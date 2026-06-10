@@ -18,6 +18,12 @@ SAMPLE_TEX = os.path.join(REPO, "tests", "samples",
                           "w_proximitymine_c.mktx.tex")
 TMP = os.path.join(REPO, "tests", "_tmp")
 
+if not os.path.exists(SAMPLE_TEX):
+    print("SKIP: sample game asset not present (tests/samples/ holds "
+          "copyrighted textures that are not redistributed). Drop the "
+          "game's .mktx.tex files there to run this test.")
+    sys.exit(0)
+
 sys.path.insert(0, REPO)
 addon = importlib.import_module("io_import_republicheroes_mdl")
 addon.register()

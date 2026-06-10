@@ -13,6 +13,12 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESEARCH = os.path.join(REPO, "research")
 
+if not os.path.exists(os.path.join(RESEARCH, "a_battledroid.ast.ads")):
+    print("SKIP: animation samples not present (research/ holds copyrighted "
+          "game assets that are not redistributed). Drop the game's "
+          ".mkmesh.mdl/.mdg and .ast.ads files there to run this test.")
+    sys.exit(0)
+
 sys.path.insert(0, REPO)
 addon = importlib.import_module("io_import_republicheroes_mdl")
 addon.register()

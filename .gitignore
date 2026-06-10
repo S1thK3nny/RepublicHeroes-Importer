@@ -2,5 +2,9 @@ __pycache__/
 *.pyc
 tests/_tmp/
 tests/_tmp_tex/
+tests/_tmp_cmp/
 *.mktx.dds
 research/
+
+# Copyrighted game assets used as local test fixtures (not redistributed)
+tests/samples/
