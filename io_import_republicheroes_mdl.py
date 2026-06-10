@@ -9,13 +9,14 @@ bl_info = {
 }
 
 import io
+import math
 import os
 import struct
 
 import bpy
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
-from mathutils import Matrix
+from mathutils import Matrix, Quaternion
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +245,10 @@ def parse_skeleton(g, offset):
     if A[1] == 13:
         base = A[0]
     elif A[1] == 9:
+        base = A[4]
+    elif A[1] == 16 and A[5] in (13, 9):
+        # wrapper block (e.g. a_droid_wed1577): real skeleton is the
+        # second (offset, type) pair
         base = A[4]
     else:
         print("WARNING: unknown skeleton layout:", A)
@@ -677,6 +682,133 @@ def import_mdl(context, filepath, convert_textures=True, flip_uvs=True,
 
 
 # ---------------------------------------------------------------------------
+# .ast.ads animation set parsing
+# ---------------------------------------------------------------------------
+# Format notes: see docs/FORMAT.md. Rotation keys are deltas from the bind
+# pose, which is also what Blender's pose-bone basis expects.
+
+def _cstr(data, offset):
+    end = data.index(b"\x00", offset)
+    return data[offset:end].decode("latin-1")
+
+
+def parse_ads(filepath):
+    with open(filepath, "rb") as f:
+        d = f.read()
+    anim_count, table_off = struct.unpack_from("<2I", d, 0)
+    bone_count, bone_table_off, set_name_off = struct.unpack_from("<3I", d, 0x64)
+    set_name = _cstr(d, set_name_off)
+    bone_names = [_cstr(d, struct.unpack_from("<I", d, bone_table_off + 4 * i)[0])
+                  for i in range(bone_count)]
+
+    anims = []
+    for ai in range(anim_count):
+        chunk = struct.unpack_from("<I", d, table_off + 4 * ai)[0]
+        if d[chunk:chunk + 4] != b"ANSD":
+            print("WARNING: bad ANSD chunk at", hex(chunk))
+            continue
+        name = _cstr(d, chunk + struct.unpack_from("<I", d, chunk + 0xC)[0])
+        frame_dt, frame_count = struct.unpack_from("<2f", d, chunk + 0x10)
+        track_count = struct.unpack_from("<I", d, chunk + 0x30)[0]
+
+        rot_tracks = {}
+        pos_track_bones = []
+        for ti in range(track_count):
+            entry = chunk + 0x60 + 16 * ti
+            flag, bone = struct.unpack_from("<2H", d, entry)
+            key_count, off1, off2 = struct.unpack_from("<3I", d, entry + 4)
+            data_base = chunk + 0x64 + 16 * ti
+            times = struct.unpack_from("<{}H".format(key_count), d,
+                                       data_base + off1)
+            times = [t / 65535.0 for t in times]
+            if flag == 1:
+                quats = []
+                for k in range(key_count):
+                    x, y, z = struct.unpack_from(
+                        "<3h", d, data_base + off2 + 6 * k)
+                    qx, qy, qz = x / 32767.0, y / 32767.0, z / 32767.0
+                    qw = math.sqrt(max(
+                        0.0, 1.0 - (qx * qx + qy * qy + qz * qz)))
+                    quats.append((qw, qx, qy, qz))
+                if bone < len(bone_names):
+                    rot_tracks[bone_names[bone]] = (times, quats)
+            else:
+                # flag 0: position track, encoding not yet decoded (v1 keeps
+                # bind-pose translations)
+                if bone < len(bone_names):
+                    pos_track_bones.append(bone_names[bone])
+
+        anims.append({
+            "name": name,
+            "duration": frame_dt * frame_count,
+            "rot_tracks": rot_tracks,
+            "pos_track_bones": pos_track_bones,
+        })
+    return {"set_name": set_name, "bone_names": bone_names, "anims": anims}
+
+
+def build_actions(context, arm_obj, ads, prefix, name_filter=""):
+    """Create one Action per animation in the set.
+
+    File quats are rotation deltas from the bind pose expressed in
+    armature/model space (row-vector convention, hence the conjugation).
+    Blender's pose basis lives in the bone's local rest frame, so the
+    delta is conjugated by the bone's armature-space rest rotation.
+    See docs/FORMAT.md.
+    """
+    fps = context.scene.render.fps / context.scene.render.fps_base
+    pose_map = {pb.name.lower(): pb.name for pb in arm_obj.pose.bones}
+    rest_arm = {pb.name: pb.bone.matrix_local.to_quaternion()
+                for pb in arm_obj.pose.bones}
+
+    created = []
+    missing = set()
+    for anim in ads["anims"]:
+        if name_filter and name_filter.lower() not in anim["name"].lower():
+            continue
+        action = bpy.data.actions.new("{}.{}".format(prefix, anim["name"]))
+        action.use_fake_user = True
+        frame_span = max(anim["duration"], 1e-6) * fps
+        for bone_name, (times, quats) in anim["rot_tracks"].items():
+            target = pose_map.get(bone_name.lower())
+            if target is None:
+                missing.add(bone_name)
+                continue
+            basis = []
+            ra = rest_arm[target]
+            ra_inv = ra.inverted()
+            for qw, qx, qy, qz in quats:
+                q = ra_inv @ Quaternion((qw, -qx, -qy, -qz)) @ ra
+                if basis and basis[-1].dot(q) < 0:
+                    q.negate()
+                basis.append(q)
+            data_path = 'pose.bones["{}"].rotation_quaternion'.format(target)
+            for ci in range(4):
+                fc = action.fcurves.new(data_path, index=ci,
+                                        action_group=target)
+                fc.keyframe_points.add(len(times))
+                co = [0.0] * (2 * len(times))
+                for k, t in enumerate(times):
+                    co[2 * k] = 1.0 + t * frame_span
+                    co[2 * k + 1] = basis[k][ci]
+                fc.keyframe_points.foreach_set("co", co)
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+                fc.update()
+        created.append(action)
+
+    if missing:
+        print("WARNING: animation bones not found in armature:",
+              sorted(missing))
+    if created:
+        if arm_obj.animation_data is None:
+            arm_obj.animation_data_create()
+        if arm_obj.animation_data.action is None:
+            arm_obj.animation_data.action = created[0]
+    return created
+
+
+# ---------------------------------------------------------------------------
 # Operator / UI
 # ---------------------------------------------------------------------------
 
@@ -725,18 +857,71 @@ class IMPORT_OT_republic_heroes_mdl(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
+class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
+    """Import a Republic Heroes animation set onto the active armature"""
+    bl_idname = "import_scene.republic_heroes_ads"
+    bl_label = "Import Republic Heroes Animations"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filename_ext = ".ads"
+    filter_glob: StringProperty(default="*.ads", options={"HIDDEN"})
+
+    name_filter: StringProperty(
+        name="Name Filter",
+        description="Only import animations whose name contains this text "
+                    "(empty = all)",
+        default="",
+    )
+
+    def execute(self, context):
+        arm_obj = context.active_object
+        if arm_obj is None or arm_obj.type != "ARMATURE":
+            armatures = [o for o in context.scene.objects
+                         if o.type == "ARMATURE"]
+            if len(armatures) == 1:
+                arm_obj = armatures[0]
+            else:
+                self.report({"ERROR"},
+                            "Select the target armature first (active object "
+                            "must be the armature the animations are for)")
+                return {"CANCELLED"}
+        try:
+            ads = parse_ads(self.filepath)
+        except (struct.error, IndexError, ValueError) as e:
+            self.report({"ERROR"},
+                        "Failed to parse file (unexpected format): " + repr(e))
+            return {"CANCELLED"}
+        prefix = os.path.basename(self.filepath).split(".")[0]
+        actions = build_actions(context, arm_obj, ads, prefix,
+                                name_filter=self.name_filter)
+        skipped = [a["name"] for a in ads["anims"]
+                   if a["pos_track_bones"]]
+        self.report({"INFO"},
+                    "Imported {} action(s) from set {!r}".format(
+                        len(actions), ads["set_name"]))
+        if skipped:
+            print("NOTE: position tracks present but not yet supported in "
+                  "{} animation(s) (bind-pose translations used)".format(
+                      len(skipped)))
+        return {"FINISHED"}
+
+
 def menu_func_import(self, context):
     self.layout.operator(IMPORT_OT_republic_heroes_mdl.bl_idname,
                          text="Republic Heroes Model (.mdl)")
+    self.layout.operator(IMPORT_OT_republic_heroes_ads.bl_idname,
+                         text="Republic Heroes Animations (.ads)")
 
 
 def register():
     bpy.utils.register_class(IMPORT_OT_republic_heroes_mdl)
+    bpy.utils.register_class(IMPORT_OT_republic_heroes_ads)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
 
 def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.utils.unregister_class(IMPORT_OT_republic_heroes_ads)
     bpy.utils.unregister_class(IMPORT_OT_republic_heroes_mdl)
 
 

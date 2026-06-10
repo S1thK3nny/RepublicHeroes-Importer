@@ -3,3 +3,4 @@ __pycache__/
 tests/_tmp/
 tests/_tmp_tex/
 *.mktx.dds
+research/
