@@ -33,9 +33,9 @@ Each animation in the set becomes a Blender **Action** named
 `<set>.<animation>` (e.g. `a_battledroid.Run`) with fake-user enabled -
 pick them in the Action Editor or stack them in the NLA. A name filter in
 the import options lets you import a subset (e.g. only names containing
-"Idle"). Rotation keys are imported exactly; the few position tracks the
-format has (root motion, cameras) are not decoded yet, so characters
-animate in place (see `docs/FORMAT.md`).
+"Idle"). Both rotation and position tracks are imported, so characters
+have full motion including root translation and the vertical bob (e.g.
+a Run clip strides forward and loops cleanly).
 
 Keyframes land on the game's native 30 fps frame grid with each
 action's frame range set to its true length (e.g. `Run` = frames 1-24,
@@ -74,6 +74,10 @@ Full reverse-engineered format documentation lives in
   (s16 x/y/z, w reconstructed), stored as deltas from the bind pose in
   **armature/model space** - validated over ~79k keys and visual renders
   of battledroid and Ahsoka Idle/Run/Walk.
+- `.ast.ads` position tracks (root motion, bob, cameras) are a custom
+  per-channel float (15-bit sign-magnitude mantissa + packed 5-bit
+  exponents), a delta from the bind pose. The exact decode was confirmed
+  against the game executable's animation loader.
 
 The `research/` folder holds the analysis scripts used to reverse the
 animation format, plus sample game files they (and the tests) run against.

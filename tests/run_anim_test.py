@@ -99,6 +99,25 @@ for frac in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0):
     foot_split.append(abs(footl.z - footr.z) + abs(footl.x - footr.x))
 assert max(foot_split) > 20, foot_split  # legs actually stride
 
+# --- position tracks (v3): root motion + vertical bob -----------------
+assert any(fc.data_path.endswith(".location") for fc in run.fcurves), \
+    "no location fcurves imported"
+assert any('z_LVE' in fc.data_path for fc in run.fcurves), \
+    "no z_LVE root-motion track"
+lve = arm.pose.bones["z_LVE"]
+root = arm.pose.bones["z_Root"]
+lve_z, root_y = [], []
+for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+    ctx.scene.frame_set(int(round(f0 + (f1 - f0) * frac)))
+    ctx.view_layer.update()
+    lve_z.append(lve.matrix.translation.z)
+    root_y.append(root.matrix.translation.y)
+# root translates forward monotonically and ends far from start
+assert abs(lve_z[-1] - lve_z[0]) > 100, lve_z
+assert lve_z == sorted(lve_z) or lve_z == sorted(lve_z, reverse=True), lve_z
+# hips bob vertically during the run (not a constant height)
+assert max(root_y) - min(root_y) > 0.5, root_y
+
 # --- wed1577: type-16 skeleton variant + 13 animations ----------------
 clear_scene()
 bpy.ops.import_scene.republic_heroes_mdl(

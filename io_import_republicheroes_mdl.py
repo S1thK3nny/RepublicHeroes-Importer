@@ -16,7 +16,7 @@ import struct
 import bpy
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
-from mathutils import Matrix, Quaternion
+from mathutils import Matrix, Quaternion, Vector
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +697,30 @@ def _cstr(data, offset):
     return data[offset:end].decode("latin-1")
 
 
+def _decode_pos_component(mant_word, exp5):
+    """One channel of a position key (mirrors the game's FUN_0068fe80).
+
+    Each channel is a custom 21-bit float: 1 sign bit + 15-bit mantissa
+    (in mant_word) and a 5-bit exponent (bias 15) packed in the key's 4th
+    short. exp5 == 0 means zero.
+    """
+    if exp5 == 0:
+        return 0.0
+    bits = ((exp5 + 0x70) << 23) | ((mant_word & 0x7FFF) << 8)
+    if mant_word & 0x8000:
+        bits |= 0x80000000
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
+
+
+def _decode_pos_key(s0, s1, s2, s3):
+    """Decode an 8-byte position key (4 u16) to a 3-vector delta."""
+    return (
+        _decode_pos_component(s0, (s3 >> 10) & 0x1F),
+        _decode_pos_component(s1, (s3 >> 5) & 0x1F),
+        _decode_pos_component(s2, s3 & 0x1F),
+    )
+
+
 def parse_ads(filepath):
     with open(filepath, "rb") as f:
         d = f.read()
@@ -718,16 +742,19 @@ def parse_ads(filepath):
         track_count = struct.unpack_from("<I", d, chunk + 0x30)[0]
 
         rot_tracks = {}
-        pos_track_bones = []
+        pos_tracks = {}
         for ti in range(track_count):
             entry = chunk + 0x60 + 16 * ti
-            flag, bone = struct.unpack_from("<2H", d, entry)
+            track_type, bone = struct.unpack_from("<2H", d, entry)
             key_count, off1, off2 = struct.unpack_from("<3I", d, entry + 4)
             data_base = chunk + 0x64 + 16 * ti
             times = struct.unpack_from("<{}H".format(key_count), d,
                                        data_base + off1)
             times = [t / 65535.0 for t in times]
-            if flag == 1:
+            if bone >= len(bone_names):
+                continue
+            if track_type == 1:
+                # rotation: 6 bytes/key, compressed quaternion delta
                 quats = []
                 for k in range(key_count):
                     x, y, z = struct.unpack_from(
@@ -736,19 +763,22 @@ def parse_ads(filepath):
                     qw = math.sqrt(max(
                         0.0, 1.0 - (qx * qx + qy * qy + qz * qz)))
                     quats.append((qw, qx, qy, qz))
-                if bone < len(bone_names):
-                    rot_tracks[bone_names[bone]] = (times, quats)
-            else:
-                # flag 0: position track, encoding not yet decoded (v1 keeps
-                # bind-pose translations)
-                if bone < len(bone_names):
-                    pos_track_bones.append(bone_names[bone])
+                rot_tracks[bone_names[bone]] = (times, quats)
+            elif track_type == 0:
+                # position: 8 bytes/key, custom-float delta from bind pose
+                positions = [
+                    _decode_pos_key(*struct.unpack_from(
+                        "<4H", d, data_base + off2 + 8 * k))
+                    for k in range(key_count)]
+                pos_tracks[bone_names[bone]] = (times, positions)
+            # track types 2/3/4 (absolute quat, multiplicative, hermite)
+            # are not emitted by this game's exporter for these assets.
 
         anims.append({
             "name": name,
             "duration": duration,
             "rot_tracks": rot_tracks,
-            "pos_track_bones": pos_track_bones,
+            "pos_tracks": pos_tracks,
         })
     return {"set_name": set_name, "bone_names": bone_names, "anims": anims}
 
@@ -761,6 +791,10 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
     Blender's pose basis lives in the bone's local rest frame, so the
     delta is conjugated by the bone's armature-space rest rotation.
 
+    Position tracks are custom-float deltas from the bind pose in
+    parent-bone space; Blender's pose.location lives in the bone's local
+    rest frame, so the delta is rotated by the inverse local rest rotation.
+
     Keys are placed on the game's native 30 fps frame grid (every clip
     duration in the game data is an exact multiple of 1/30 s).
     See docs/FORMAT.md.
@@ -768,6 +802,12 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
     pose_map = {pb.name.lower(): pb.name for pb in arm_obj.pose.bones}
     rest_arm = {pb.name: pb.bone.matrix_local.to_quaternion()
                 for pb in arm_obj.pose.bones}
+    rest_local_rot = {}
+    for pb in arm_obj.pose.bones:
+        rest = pb.bone.matrix_local
+        if pb.bone.parent is not None:
+            rest = pb.bone.parent.matrix_local.inverted() @ rest
+        rest_local_rot[pb.name] = rest.to_quaternion()
 
     created = []
     missing = set()
@@ -807,6 +847,31 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
                 for kp in fc.keyframe_points:
                     kp.interpolation = "LINEAR"
                 fc.update()
+
+        for bone_name, (times, positions) in anim["pos_tracks"].items():
+            target = pose_map.get(bone_name.lower())
+            if target is None:
+                missing.add(bone_name)
+                continue
+            rl_inv = rest_local_rot[target].inverted()
+            locs = [rl_inv @ Vector(p) for p in positions]
+            data_path = 'pose.bones["{}"].location'.format(target)
+            for ci in range(3):
+                fc = action.fcurves.new(data_path, index=ci,
+                                        action_group=target)
+                fc.keyframe_points.add(len(times))
+                co = [0.0] * (2 * len(times))
+                for k, t in enumerate(times):
+                    frame = 1.0 + t * frame_span
+                    if abs(frame - round(frame)) < 0.05:
+                        frame = float(round(frame))
+                    co[2 * k] = frame
+                    co[2 * k + 1] = locs[k][ci]
+                fc.keyframe_points.foreach_set("co", co)
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+                fc.update()
+
         action.use_frame_range = True
         action.frame_start = 1.0
         action.frame_end = 1.0 + round(frame_span)
@@ -919,15 +984,9 @@ class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
             context.scene.render.fps_base = 1.0
         actions = build_actions(context, arm_obj, ads, prefix,
                                 name_filter=self.name_filter)
-        skipped = [a["name"] for a in ads["anims"]
-                   if a["pos_track_bones"]]
         self.report({"INFO"},
                     "Imported {} action(s) from set {!r}".format(
                         len(actions), ads["set_name"]))
-        if skipped:
-            print("NOTE: position tracks present but not yet supported in "
-                  "{} animation(s) (bind-pose translations used)".format(
-                      len(skipped)))
         return {"FINISHED"}
 
 

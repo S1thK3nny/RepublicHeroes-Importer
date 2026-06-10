@@ -135,7 +135,7 @@ All offsets below are relative to the chunk start unless noted.
 ### Track entry (16 bytes, at chunk+0x60 + 16*i)
 
 ```
-+0x00  u16  flag: 0 = position track, 1 = rotation track
++0x00  u16  track type: 0 = position, 1 = rotation (2/3/4 unused here)
 +0x02  u16  bone index (into the set's bone list)
 +0x04  u32  key count
 +0x08  u32  off1: key times
@@ -162,17 +162,35 @@ entry's own position (self-relative pointer quirk).
   local-space mixup keeps near-axis-aligned rigs (droids) looking
   almost right while bending humanoid shoulder/hip chains wrong.
   78,949 battledroid keys all satisfy |xyz| ≤ 1.
-- **Position values** (flag 0): 8 bytes/key - **encoding not yet
-  decoded**. Used only by a few bones per rig (root motion `z_LVE`,
-  `z_Root` bob, cameras, props). Observations:
-  - `z_LVE` in `Run`: key0 = `(0,0,0,0)`, end = `(0,0,-29696,23)` s16 -
-    consistent with root motion along one axis; 4th u16 small (20–23)
-    for `z_LVE`, large (695–24246) for cameras/root.
-  - Constant tracks exist whose value should decode to the bone's
-    local position (cameras) - none of: s16×scale, f16, f32 pairs,
-    11-11-10 packing, normalize-4 quat, exponent-in-w matched all
-    constraints. Best lead: per-key `(s16[3], u16)` with a per-bone or
-    magnitude-dependent scale.
+- **Position values** (track type 0): 8 bytes/key = a 3-component
+  translation **delta from the bind pose**, in parent-bone space, in a
+  custom per-channel float format. Decode (from the game's
+  `MKAnimDataMisc` `FUN_0068fe80`): the key is 4 little-endian u16
+  `(mx, my, mz, e)`. For each channel `i` (X, Y, Z) the 5-bit exponent
+  is `exp = (e >> (10 - 5*i)) & 0x1f` (X = bits 14-10, Y = 9-5,
+  Z = 4-0); if `exp == 0` the channel is `0.0`, else the value is the
+  IEEE-754 float with bits
+  `((exp + 0x70) << 23) | ((m & 0x7fff) << 8) | ((m & 0x8000) << 16)`
+  - i.e. sign = `m` bit 15, 15-bit mantissa = `m & 0x7fff` (top of the
+    23-bit field), exponent biased by 15 (`exp + 112 - 127`). Final
+    bone-local translation = bind-local translation + this delta. Used
+    by root-motion (`z_LVE`), the `z_Root` bob, cameras, props and
+    trail bones. Verified: Ahsoka `Run` `z_LVE` ramps `0 → -350`
+    (forward root motion) and `z_Root` bobs `±2` about its bind height;
+    `Idle` has no root translation. (My earlier "sign-magnitude lane,
+    smoothly-changing lane-3 high byte" notes were this format seen
+    dimly - the lane-3 bytes are the per-channel exponents.)
+  - The other track types exist in the engine but aren't emitted for
+    these assets: type 1 = 6-byte compressed-quaternion rotation
+    (above); type 2 = 8-byte absolute quaternion (4×s16 ÷ 32768,
+    `FUN_0068fda0`); type 3 = multiplicative-relative vector; type 4 =
+    Hermite-spline. The runtime resampler (`FUN_00694a10`) re-encodes
+    rotations to type 2 in memory.
+- **Chunk region `offs[5]`** (between track data and the name strings):
+  an event/marker table: `u32 count`, `u32 entry_size(16)`, `u32 0`,
+  `u32 region_size`, then `count` entry offsets and 16-byte entries
+  carrying string offsets (event names, e.g. footstep cues, stored
+  before the animation name).
 
 ### Set tail
 
@@ -182,8 +200,9 @@ table and strings. Bind-pose sets (`*_BINDPOSE`) pair with
 
 ## Open questions
 
-1. Position-track value encoding (above) - the only blocker for root
-   motion / camera animation import.
+1. Track types 2/3/4 (absolute quat, multiplicative, Hermite) and the
+   event/marker table are decoded structurally but not imported (the
+   character assets don't use 2/3/4; markers are footstep/sound cues).
 2. `.mdl` sections 0/3, the second/third region offsets at chunk+0x34,
    and the exact meaning of the +0x4C tail fields.
 3. Whether any textures use formats beyond DXT1/DXT5/ATI2.
