@@ -35,7 +35,10 @@ pick them in the Action Editor or stack them in the NLA. A name filter in
 the import options lets you import a subset (e.g. only names containing
 "Idle"). Both rotation and position tracks are imported, so characters
 have full motion including root translation and the vertical bob (e.g.
-a Run clip strides forward and loops cleanly).
+a Run clip strides forward and loops cleanly). The *Strip Root Motion*
+import option drops the root-motion bone's translation so clips play in
+place at the origin (keeping the body bob) - handy for looping idles and
+cycles.
 
 Keyframes land on the game's native 30 fps frame grid with each
 action's frame range set to its true length (e.g. `Run` = frames 1-24,

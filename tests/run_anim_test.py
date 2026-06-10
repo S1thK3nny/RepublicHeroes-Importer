@@ -118,6 +118,30 @@ assert lve_z == sorted(lve_z) or lve_z == sorted(lve_z, reverse=True), lve_z
 # hips bob vertically during the run (not a constant height)
 assert max(root_y) - min(root_y) > 0.5, root_y
 
+# --- strip root motion: z_LVE track gone, bob kept --------------------
+clear_scene()
+bpy.ops.import_scene.republic_heroes_mdl(
+    filepath=os.path.join(RESEARCH, "a_ahsoka_bindpose.mkmesh.mdl"))
+arm = next(o for o in ctx.scene.objects if o.type == "ARMATURE")
+ctx.view_layer.objects.active = arm
+bpy.ops.import_scene.republic_heroes_ads(
+    filepath=os.path.join(RESEARCH, "a_ahsoka.ast.ads"),
+    name_filter="Run", strip_root_motion=True)
+run_s = next(a for a in bpy.data.actions if a.name == "a_ahsoka.Run")
+assert not any('z_LVE' in fc.data_path for fc in run_s.fcurves), \
+    "root motion not stripped"
+# the body bob (z_Root location) survives
+assert any('z_Root' in fc.data_path and fc.data_path.endswith(".location")
+           for fc in run_s.fcurves), "bob stripped too"
+arm.animation_data.action = run_s
+f0, f1 = run_s.frame_range
+lve_z = []
+for frac in (0.0, 0.5, 1.0):
+    ctx.scene.frame_set(int(round(f0 + (f1 - f0) * frac)))
+    ctx.view_layer.update()
+    lve_z.append(arm.pose.bones["z_LVE"].matrix.translation.z)
+assert max(lve_z) - min(lve_z) < 1e-4, lve_z  # stays at origin
+
 # --- wed1577: type-16 skeleton variant + 13 animations ----------------
 clear_scene()
 bpy.ops.import_scene.republic_heroes_mdl(
@@ -152,5 +176,5 @@ filtered = [a for a in bpy.data.actions
 assert 0 < len(filtered) < 92, len(filtered)
 assert all("idle" in a.name.lower() for a in filtered)
 
-print("TEST OK: 92 + 13 actions, upright Run cycle, type-16 skeleton, "
-      "name filter")
+print("TEST OK: 92 + 13 actions, upright Run cycle, root motion + bob, "
+      "strip-root-motion, type-16 skeleton, name filter")

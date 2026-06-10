@@ -1,10 +1,12 @@
 bl_info = {
-    "name": "Star Wars The Clone Wars: Republic Heroes (.mdl)",
+    "name": "Star Wars The Clone Wars: Republic Heroes (.mdl/.ads)",
     "author": "RepublicHeroes-Importer project",
-    "version": (1, 0, 0),
+    "version": (2, 0, 0),
     "blender": (4, 0, 0),
-    "location": "File > Import > Republic Heroes Model (.mdl)",
-    "description": "Import .mdl/.mdg models from Star Wars The Clone Wars: Republic Heroes (PC)",
+    "location": "File > Import > Republic Heroes Model (.mdl) / Animations (.ads)",
+    "description": "Import .mdl/.mdg models (mesh, skeleton, textures) and "
+                   ".ast.ads animations from Star Wars The Clone Wars: "
+                   "Republic Heroes (PC)",
     "category": "Import-Export",
 }
 
@@ -783,7 +785,13 @@ def parse_ads(filepath):
     return {"set_name": set_name, "bone_names": bone_names, "anims": anims}
 
 
-def build_actions(context, arm_obj, ads, prefix, name_filter=""):
+# Parentless root-motion accumulator bone; its translation is the per-clip
+# world displacement. Stripping it keeps clips playing in place at the origin.
+ROOT_MOTION_BONE = "z_lve"
+
+
+def build_actions(context, arm_obj, ads, prefix, name_filter="",
+                  strip_root_motion=False):
     """Create one Action per animation in the set.
 
     File quats are rotation deltas from the bind pose expressed in
@@ -849,6 +857,8 @@ def build_actions(context, arm_obj, ads, prefix, name_filter=""):
                 fc.update()
 
         for bone_name, (times, positions) in anim["pos_tracks"].items():
+            if strip_root_motion and bone_name.lower() == ROOT_MOTION_BONE:
+                continue
             target = pose_map.get(bone_name.lower())
             if target is None:
                 missing.add(bone_name)
@@ -959,6 +969,13 @@ class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
                     "is correct",
         default=True,
     )
+    strip_root_motion: BoolProperty(
+        name="Strip Root Motion",
+        description="Skip the root-motion bone's translation so clips play "
+                    "in place at the origin (leaves the body bob intact). "
+                    "Useful for looping idles/cycles",
+        default=False,
+    )
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -983,7 +1000,8 @@ class IMPORT_OT_republic_heroes_ads(bpy.types.Operator, ImportHelper):
             context.scene.render.fps = int(GAME_FPS)
             context.scene.render.fps_base = 1.0
         actions = build_actions(context, arm_obj, ads, prefix,
-                                name_filter=self.name_filter)
+                                name_filter=self.name_filter,
+                                strip_root_motion=self.strip_root_motion)
         self.report({"INFO"},
                     "Imported {} action(s) from set {!r}".format(
                         len(actions), ads["set_name"]))
